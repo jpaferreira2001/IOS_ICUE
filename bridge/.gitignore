@@ -1,0 +1,4 @@
+# config.json holds the API token: never commit it
+config.json
+state.json
+__pycache__/

@@ -1,0 +1,8 @@
+[
+  { "id": "warm",   "name": "Warm White", "colors": ["#FF9A3C"] },
+  { "id": "ocean",  "name": "Ocean",      "colors": ["#0A3CFF", "#00D4FF"], "angle": 0 },
+  { "id": "sunset", "name": "Sunset",     "colors": ["#FF512F", "#DD2476"], "angle": 0 },
+  { "id": "purple", "name": "Purple",     "colors": ["#7B2FFF", "#FF2FD6"], "angle": 0 },
+  { "id": "forest", "name": "Forest",     "colors": ["#00B85C", "#B8F000"], "angle": 0 },
+  { "id": "cool",   "name": "Cool White", "colors": ["#BFE4FF"] }
+]
