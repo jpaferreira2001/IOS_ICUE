@@ -40,6 +40,18 @@ All endpoints except `/health` need the token: header `X-Token: <token>` (or `Au
 
 Every write returns the new state, so the widget can refresh from the response.
 
+## GPU lights (Gigabyte RTX 5070): investigation, not integrated yet
+
+Goal: make the GPU's RGB follow the bridge's power, brightness and scene. Card: NVIDIA RTX 5070, PCI subsystem `1458:4185`; lit via Gigabyte Control Center (GCC 26.08).
+
+Findings (2026-09-20):
+- GCC has no public API. It does ship Gigabyte's RGB Fusion SDK libraries in `C:\Program Files\GIGABYTE\Control Center\Lib\GBT_VGA\GvDll\`: `GLedApi.dll` (motherboard API, 32-bit, not usable from 64-bit Python), `GvLedLib.dll` (GPU/peripherals, **64-bit**, cdecl, v3.7), `GvIllumLib.dll` (newer zone API, 9 undocumented exports).
+- `bridge/gpu_probe.py` (read-only, sets no colors) loads `GvLedLib.dll` and calls `GvLedGetVersion`, `GvLedInitial`, `GvLedGetVgaModelName`. Result as a normal user with GCC's window closed: loads fine, version 1.0, **0 devices, empty model name**, so the documented entry point does not see this card.
+- The documented settings struct (older SDK, from the GPL RGB-Fusion-Tool): `GVLED_CFG` = 11 x uint32 (`nType` 1=static, `nSpeed`, `dwTime1-3`, `nMinBrightness`, `nMaxBrightness` 0-10, `dwColor` 0x00RRGGBB, `nAngle`, `nOn`, `nSync`). Not verified against v3.7.
+- OpenRGB supports some Gigabyte 50-series cards per model (5080 Waterforce, 5090 Master at I2C 0x75); there is only an open request for a 5070 variant (`1458:4174`, not this card).
+
+Untried: run `gpu_probe.py` as Administrator; probe `GvIllumLib.dll` (would need guessed signatures); OpenRGB detection test (close GCC first; it can also see the Corsair RAM, so only touch the GPU entry). Because Control Center writes to the same chip, expect it to override our colors whenever it applies its own profile.
+
 ## Run at login
 
 `bridge\install_autostart.ps1` (no admin needed) puts `iCUE Bridge.vbs` in your Startup folder. At each login it starts the bridge hidden, 20 s later so iCUE is up first. `.\install_autostart.ps1 -Remove` undoes it.
