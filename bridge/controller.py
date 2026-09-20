@@ -194,7 +194,8 @@ class LightController:
                         self._resync.clear()
                         self._setup()
                     self._apply()  # also serves as the optional periodic refresh
-                    self._apply_outputs()
+                    # not the outputs: re-sending OpenRGB colors here (the LCD-cap re-check runs
+                    # every 30 s) would overwrite colors you just set in OpenRGB
             except Exception:
                 log.exception("supervisor step failed; will retry on next event")
 

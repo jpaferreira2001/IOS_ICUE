@@ -24,7 +24,6 @@ import logging
 import socket
 import struct
 import threading
-import time
 from pathlib import Path
 
 from openrgb import OpenRGBClient
@@ -125,7 +124,7 @@ class OpenRgbOutput:
         self._ids: list[int] = []
         self._targets: list[_Target] = []
         self._missing: set[str] = set()
-        self._connected_at = 0.0
+        self._last_summary = None
         self._warned = False
         self._thread: threading.Thread | None = None
 
@@ -171,14 +170,14 @@ class OpenRgbOutput:
 
     def _run(self):
         while not self._stop.is_set():
-            # Sleep until there is news; if disconnected or missing devices, wake up
-            # regularly and retry with the latest brightness.
+            # Sleep until there is news (a brightness change, a capture). While disconnected,
+            # or while some wanted device is missing, also wake up now and then to look again.
             timeout = None
             if self._conn is None:
                 timeout = RECONNECT_SECONDS
             elif self._missing:
                 timeout = RESCAN_SECONDS
-            self._wake.wait(timeout)
+            notified = self._wake.wait(timeout)
             self._wake.clear()
             if self._stop.is_set():
                 break
@@ -187,12 +186,13 @@ class OpenRgbOutput:
             if scale is None:
                 continue
             try:
-                if self._conn is not None and self._missing \
-                        and time.monotonic() - self._connected_at >= RESCAN_SECONDS:
-                    self._drop()  # look for the missing devices again
                 if self._conn is None:
                     self._connect()
-                self._write(scale)
+                    self._write(scale)  # fresh connection: bring the devices up to date
+                elif notified:
+                    self._write(scale)
+                else:
+                    self._rescan(scale)  # timed out: only look for devices that were missing
                 self._warned = False
             except Exception as e:
                 if not self._warned:
@@ -246,23 +246,60 @@ class OpenRgbOutput:
         found = {t.key for t in targets}
         self._missing = self._wanted - found
         self._ids, self._targets = ids, targets
-        self._connected_at = time.monotonic()
-        log.info("OpenRGB: dimming %s", ", ".join(t.name for t in targets) or "nothing")
-        if self._missing:
-            log.info("OpenRGB: not present right now: %s", ", ".join(sorted(self._missing)))
+        summary = (", ".join(t.name for t in targets) or "nothing",
+                   ", ".join(sorted(self._missing)))
+        if summary != self._last_summary:  # the periodic rescan would otherwise repeat this
+            log.info("OpenRGB: dimming %s", summary[0])
+            if summary[1]:
+                log.info("OpenRGB: not present right now: %s", summary[1])
+            self._last_summary = summary
 
     def _drop(self):
         conn, self._conn, self._targets, self._ids = self._conn, None, [], []
         if conn is not None:
             conn.close()
 
-    def _write(self, scale: float):
+    def _rescan(self, scale: float):
+        """Look for wanted devices that were missing. Never touches devices that are already
+        working: rewriting them here would overwrite colors you just set in OpenRGB."""
+        before = {t.key for t in self._targets}
+        self._refresh_targets()
+        arrived = {t.key for t in self._targets} - before
+        if arrived:
+            log.info("OpenRGB: now present: %s", ", ".join(sorted(arrived)))
+            self._write(scale, only=arrived)
+
+    def _adopt_edits(self):
+        """If a device no longer shows what we last wrote, you changed it in OpenRGB: take its
+        colors as the new look (assumed to be set at full brightness), so brightness changes
+        keep your colors instead of restoring the old look."""
+        with self._lock:
+            if not self._last_written:
+                return
+            last = dict(self._last_written)
+        current = self._read_colors()
+        with self._lock:
+            for key, (name, colors) in current.items():
+                if key in last and colors != last[key]:
+                    self._base[key] = colors
+                    self._last_written.pop(key, None)
+                    log.info("OpenRGB: %s was changed in OpenRGB; using its colors as the new look", name)
+            self._save_base()
+
+    def _write(self, scale: float, only=None):
         ids = self._conn.ids()  # cheap, and the IDs change whenever OpenRGB re-detects hardware
         if ids != self._ids:
             log.info("OpenRGB: controller IDs changed; re-reading devices")
             self._refresh_targets()
             ids = self._ids
+            with self._lock:
+                # a re-detection resets device colors: that is not an edit of yours
+                self._last_written.clear()
+        elif only is None:
+            self._adopt_edits()
         for target in self._targets:
+            if only is not None and target.key not in only:
+                continue
             with self._lock:
                 base = self._base.get(target.key)
                 if base is None or len(base) != target.led_count:
