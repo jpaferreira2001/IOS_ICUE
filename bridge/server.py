@@ -3,9 +3,12 @@ import atexit
 import hmac
 import json
 import logging
+import logging.handlers
 import secrets
 import socket
+import sys
 import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -138,8 +141,37 @@ call('/state');
 </script>"""
 
 
+_instance_mutex = None  # kept referenced for the life of the process
+
+
+def already_running() -> bool:
+    """True if another bridge holds the named mutex (Windows). Two bridges on one port
+    silently share it and only one knows the current token."""
+    global _instance_mutex
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    _instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\iCUEBridge")
+    return ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+
+
+def setup_logging():
+    handlers = [logging.handlers.RotatingFileHandler(
+        HERE / "bridge.log", maxBytes=500_000, backupCount=2, encoding="utf-8")]
+    if sys.stderr:  # None when launched hidden without a console
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, handlers=handlers,
+                        format="%(asctime)s %(name)s: %(message)s")
+
+
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    setup_logging()
+    if already_running():
+        logging.error("another bridge is already running; exiting")
+        print("Another bridge is already running. Stop it first.")
+        sys.exit(1)
+    if "--delay" in sys.argv:  # used at login so iCUE has time to start
+        time.sleep(float(sys.argv[sys.argv.index("--delay") + 1]))
     cfg = load_config()
     controller = LightController(load_scenes(HERE / "scenes.json"), HERE / "state.json",
                                  cfg["refresh_seconds"])

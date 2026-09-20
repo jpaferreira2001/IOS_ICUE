@@ -3,4 +3,5 @@
 config.json
 homekit.state
 state.json
+bridge.log*
 __pycache__/

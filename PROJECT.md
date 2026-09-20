@@ -40,6 +40,18 @@ All endpoints except `/health` need the token: header `X-Token: <token>` (or `Au
 
 Every write returns the new state, so the widget can refresh from the response.
 
+## Run at login
+
+`bridge\install_autostart.ps1` (no admin needed) puts `iCUE Bridge.vbs` in your Startup folder. At each login it starts the bridge hidden, 20 s later so iCUE is up first. `.\install_autostart.ps1 -Remove` undoes it.
+
+- Log: `bridge\bridge.log` (rotating). There is no console window.
+- Only one bridge can run: a second launch exits with "already running". To restart: end the `python.exe` processes whose command line contains `server.py` (two per bridge: launcher + python), then run the launcher again.
+- The bridge starts at login, not at boot, because iCUE and its SDK only run inside your Windows session.
+
+## The 7-day expiry (free Apple ID)
+
+The app and widget stop working 7 days after signing. Re-signing the same IPA with the same bundle ID over the top keeps the app. Options: let the installer's auto-refresh do it (needs the PC on and the phone on the same Wi-Fi), re-install manually by day 6, or pay for an Apple Developer account ($99/year, 1-year signing).
+
 ## Widget not showing (debugging log)
 
 Symptom: after a Sideloadly install (iOS 26.6.2, free Apple ID) the app works, but "iCUE Lights" is not in the widget gallery, even after restarting the phone and reinstalling. The IPA is fine: it contains `PlugIns/ICueLightsWidget.appex` (arm64, links WidgetKit + AppIntents, has the extension entry point) and Sideloadly is not dropping it.
@@ -110,7 +122,7 @@ Also give the PC a fixed IP (DHCP reservation on your router), because the widge
 - [x] Verified from phone browser over Wi-Fi
 - [x] HomeKit accessory in the bridge (advertisement verified on the PC's network)
 - [ ] Pair with the Home app, test the light and scene switches, add Home widget in StandBy
-- [ ] Bridge auto-start with Windows
+- [x] Bridge auto-start at Windows login (`bridge/install_autostart.ps1`)
 - [x] SwiftUI companion app written (`ios/App`), not yet compiled
 - [x] WidgetKit extension + App Intents written (`ios/Widget`), not yet compiled
 - [x] XcodeGen project (`ios/project.yml`) + GitHub Actions workflow -> unsigned IPA, not yet run
