@@ -17,6 +17,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.icuelights.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Config/App-Info.plist
       properties:
@@ -38,7 +39,8 @@ targets:
     info:
       path: Config/Widget-Info.plist
       properties:
-        CFBundleDisplayName: iCUE Lights
+        # Must differ from the app's name: Sideloadly matches App IDs by name.
+        CFBundleDisplayName: iCUE Lights Widget
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
         NSLocalNetworkUsageDescription: Talks to the iCUE bridge running on your PC.

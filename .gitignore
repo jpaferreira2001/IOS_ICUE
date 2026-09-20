@@ -7,4 +7,8 @@ ios/Config/
 ios/build/
 ios/out/
 
+# downloaded CI artifacts
+ICueLights-ipa/
+*.ipa
+
 .DS_Store

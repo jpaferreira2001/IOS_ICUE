@@ -172,5 +172,6 @@ struct LightsWidget: Widget {
 struct LightsWidgetBundle: WidgetBundle {
     var body: some Widget {
         LightsWidget()
+        ProbeWidget()
     }
 }
