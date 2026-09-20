@@ -1,3 +1,4 @@
 cuesdk
 flask
+openrgb-python
 HAP-python

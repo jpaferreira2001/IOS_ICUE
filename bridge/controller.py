@@ -76,7 +76,10 @@ class _Device:
 
 
 class LightController:
-    def __init__(self, scenes, state_path: Path, refresh_seconds: float = 0):
+    def __init__(self, scenes, state_path: Path, refresh_seconds: float = 0, outputs=()):
+        # outputs: extra lighting back ends (e.g. OpenRGB) with start(), stop() and
+        # apply(scene, scale); they run alongside the iCUE SDK output.
+        self._outputs = list(outputs)
         self._scenes = {s.id: s for s in scenes}
         self._scene_order = [s.id for s in scenes]
         self._state_path = state_path
@@ -90,6 +93,7 @@ class LightController:
         self._controlled: set[str] = set()  # device ids we hold exclusive lighting control of
         self._listeners: list = []
         self._empty_retries = 0
+        self._last_summary = None
         self._devices: list[_Device] = []
         self._sdk: CueSdk | None = None
         self._thread: threading.Thread | None = None
@@ -109,10 +113,15 @@ class LightController:
         self._thread = threading.Thread(target=self._supervise, name="icue-supervisor",
                                         daemon=True)
         self._thread.start()
+        for output in self._outputs:
+            output.start()
+        self._apply_outputs()  # they don't depend on iCUE, so bring them up to date now
 
     def stop(self):
         self._stop.set()
         self._resync.set()
+        for output in self._outputs:
+            output.stop()
         if self._thread:
             self._thread.join(timeout=3)
         if self._sdk:
@@ -202,6 +211,7 @@ class LightController:
                         self._resync.clear()
                         self._setup()
                     self._apply()  # also serves as the optional periodic refresh
+                    self._apply_outputs()
             except Exception:
                 log.exception("supervisor step failed; will retry on next event")
 
@@ -238,7 +248,10 @@ class LightController:
                 self._controlled.add(dev.id)
             else:
                 log.error("request_control failed for %s: %s", dev.model, err)
-        log.info("controlling %d device(s): %s", len(found), ", ".join(d.model for d in found))
+        summary = ", ".join(d.model for d in found)
+        if summary != self._last_summary:  # the 0-LED re-checks would otherwise repeat this
+            log.info("controlling %d device(s): %s", len(found), summary)
+            self._last_summary = summary
         if not self._subscribed:
             self._subscribed = self._sdk.subscribe_for_events(self._on_device_event) == 0
 
@@ -246,12 +259,22 @@ class LightController:
         self._save_state()
         if self._connected:
             self._apply()
+        self._apply_outputs()
         state = self.get_state()
         for listener in self._listeners:
             try:
                 listener(state)
             except Exception:
                 log.exception("state listener failed")
+
+    def _apply_outputs(self):
+        scene = self._scenes[self._scene_id]
+        scale = self._brightness / 100 if self._power else 0.0
+        for output in self._outputs:
+            try:
+                output.apply(scene, scale)
+            except Exception:
+                log.exception("output failed")
 
     def _apply(self):
         scene = self._scenes[self._scene_id]

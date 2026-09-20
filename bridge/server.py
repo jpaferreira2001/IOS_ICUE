@@ -17,8 +17,18 @@ from controller import LightController, load_scenes
 
 HERE = Path(__file__).parent
 CONFIG_PATH = HERE / "config.json"
-DEFAULT_CONFIG = {"host": "0.0.0.0", "port": 8765, "refresh_seconds": 0,
-                  "homekit": False, "homekit_port": 51826}  # HomeKit is optional; see PROJECT.md
+DEFAULT_CONFIG = {
+    "host": "0.0.0.0", "port": 8765, "refresh_seconds": 0,
+    "homekit": False, "homekit_port": 51826,  # HomeKit is optional; see PROJECT.md
+    # Devices driven through OpenRGB (its Windows service serves the SDK on 6742). Names must
+    # match OpenRGB's device names exactly (case-insensitive); absent ones are skipped.
+    # iCUE keeps the Corsair RAM and LINK hub, which OpenRGB cannot see / should not touch.
+    "openrgb": {
+        "enabled": True, "address": "127.0.0.1", "port": 6742,
+        "devices": ["Gigabyte GeForce RTX 5070 Eagle OC ICE", "Razer Huntsman V2",
+                    "Razer Cobra Pro (Wireless)", "Razer Cobra Pro (Wired)"],
+    },
+}
 
 
 def new_homekit_pin() -> str:
@@ -173,8 +183,13 @@ def main():
     if "--delay" in sys.argv:  # used at login so iCUE has time to start
         time.sleep(float(sys.argv[sys.argv.index("--delay") + 1]))
     cfg = load_config()
+    outputs = []
+    if cfg["openrgb"].get("enabled"):
+        from openrgb_output import OpenRgbOutput  # imported here so it stays optional
+        outputs.append(OpenRgbOutput(cfg["openrgb"]["address"], cfg["openrgb"]["port"],
+                                     cfg["openrgb"]["devices"]))
     controller = LightController(load_scenes(HERE / "scenes.json"), HERE / "state.json",
-                                 cfg["refresh_seconds"])
+                                 cfg["refresh_seconds"], outputs)
     controller.start()
     atexit.register(controller.stop)
 

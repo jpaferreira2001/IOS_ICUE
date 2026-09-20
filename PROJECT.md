@@ -40,7 +40,16 @@ All endpoints except `/health` need the token: header `X-Token: <token>` (or `Au
 
 Every write returns the new state, so the widget can refresh from the response.
 
-## GPU lights (Gigabyte RTX 5070): investigation, not integrated yet
+## Architecture now: iCUE SDK + OpenRGB (hybrid)
+
+- **iCUE SDK** (`controller.py`) drives what only iCUE can: the Corsair Vengeance RAM and the iCUE LINK hub (fans). iCUE also keeps the cooler's LCD display. iCUE must be running.
+- **OpenRGB** (`openrgb_output.py`) drives the Gigabyte RTX 5070 GPU and the Razer keyboard and mouse. The OpenRGB Windows service (auto-start, SDK server on 127.0.0.1:6742) must be running. List the devices in `config.json` > `openrgb.devices` (exact OpenRGB names).
+- Every power/brightness/scene change goes to both. Gradient scenes are spread left to right across a device's key matrix or LED order; solid scenes are uniform. Brightness scales the colors.
+- Keep the Razer Synapse app closed (OpenRGB drives the Razer devices), and leave the OpenRGB devices in Direct mode (a per-LED Static for the GPU): colors are ignored in animated modes.
+
+**OpenRGB 1.0 gotcha (cost hours):** its server silently ignores color writes from protocol <= 5 clients, which includes openrgb-python (max protocol 4), while reads still work. From protocol 6 on, controllers are addressed by unique IDs that only a protocol-6 client receives, and they change every time OpenRGB re-detects hardware (the OpenRGB window's log showed IDs 50-54, later 55-59). `openrgb_output.py` therefore reads device details with openrgb-python at protocol 3 (protocol 4+ costs a 10 s plugin-list timeout per connection) and writes `UPDATELEDS` (packet 1050) over a small protocol-6 socket, re-reading the ID list before every write. Verified by reading colors back from the server and by eye.
+
+## GPU lights (Gigabyte RTX 5070): investigation log
 
 Goal: make the GPU's RGB follow the bridge's power, brightness and scene. Card: NVIDIA RTX 5070, PCI subsystem `1458:4185`; lit via Gigabyte Control Center (GCC 26.08).
 
