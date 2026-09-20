@@ -1,15 +1,20 @@
-"""Owns the iCUE SDK session and the current lighting state (power, brightness, scene)."""
+"""Owns the iCUE SDK session and the current lighting state (power, brightness, preset).
+
+The bridge never picks colors. You set your colors and effects in iCUE and OpenRGB; this only
+scales their brightness:
+  * iCUE devices (RAM, LINK hub): a transparent black layer on top of whatever iCUE shows.
+    Alpha 0 = untouched, 255 = black. Colors, presets and animated effects stay as they are.
+  * extra outputs (OpenRGB): see openrgb_output.py.
+"""
 import json
 import logging
-import math
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from cuesdk import CueSdk
 from cuesdk import api as cue_api
-from cuesdk.enums import (CorsairAccessLevel, CorsairDeviceType,
-                          CorsairEventId, CorsairSessionState)
+from cuesdk.enums import CorsairDeviceType, CorsairEventId, CorsairSessionState
 from cuesdk.structs import CorsairDeviceFilter, CorsairLedColor
 
 log = logging.getLogger("bridge.controller")
@@ -22,43 +27,19 @@ EMPTY_RETRY_FAST_COUNT = 10
 EMPTY_RETRY_SLOW = 30.0
 
 
-def hex_to_rgb(value: str):
-    value = value.lstrip("#")
-    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def rgb_to_hex(rgb) -> str:
-    return "#%02X%02X%02X" % tuple(rgb)
-
-
 @dataclass(frozen=True)
-class Scene:
+class Preset:
     id: str
     name: str
-    colors: tuple  # one color = solid; several = gradient across each device
-    angle: float = 0.0  # gradient direction in degrees, 0 = left to right
-
-    def color_at(self, t: float):
-        """Color at position t (0..1) along the gradient."""
-        if len(self.colors) == 1:
-            return self.colors[0]
-        pos = min(max(t, 0.0), 1.0) * (len(self.colors) - 1)
-        i = min(int(pos), len(self.colors) - 2)
-        f = pos - i
-        a, b = self.colors[i], self.colors[i + 1]
-        return tuple(round(a[k] + (b[k] - a[k]) * f) for k in range(3))
+    brightness: int  # percent
 
 
-def load_scenes(path: Path):
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    scenes = [
-        Scene(s["id"], s["name"], tuple(hex_to_rgb(c) for c in s["colors"]),
-              float(s.get("angle", 0)))
-        for s in raw
-    ]
-    if not scenes:
-        raise ValueError(f"{path} defines no scenes")
-    return scenes
+def load_presets(raw) -> list[Preset]:
+    presets = [Preset(p["id"], p["name"],
+                      min(max(int(p["brightness"]), BRIGHTNESS_MIN), BRIGHTNESS_MAX)) for p in raw]
+    if not presets:
+        raise ValueError("config.json defines no presets")
+    return presets
 
 
 def disconnect_sdk(sdk: CueSdk):
@@ -72,16 +53,15 @@ class _Device:
     id: str
     model: str
     led_ids: list
-    positions: list  # (x, y) per led, same order as led_ids
 
 
 class LightController:
-    def __init__(self, scenes, state_path: Path, refresh_seconds: float = 0, outputs=()):
-        # outputs: extra lighting back ends (e.g. OpenRGB) with start(), stop() and
-        # apply(scene, scale); they run alongside the iCUE SDK output.
+    def __init__(self, presets, state_path: Path, refresh_seconds: float = 0, outputs=()):
+        # outputs: extra back ends (e.g. OpenRGB) with start(), stop() and apply(scale);
+        # they run alongside the iCUE SDK output. An output may also offer capture().
         self._outputs = list(outputs)
-        self._scenes = {s.id: s for s in scenes}
-        self._scene_order = [s.id for s in scenes]
+        self._presets = {p.id: p for p in presets}
+        self._preset_order = [p.id for p in presets]
         self._state_path = state_path
         self._refresh_seconds = refresh_seconds
 
@@ -90,7 +70,6 @@ class LightController:
         self._stop = threading.Event()
         self._connected = False
         self._subscribed = False
-        self._controlled: set[str] = set()  # device ids we hold exclusive lighting control of
         self._listeners: list = []
         self._empty_retries = 0
         self._last_summary = None
@@ -100,7 +79,6 @@ class LightController:
 
         self._power = True
         self._brightness = BRIGHTNESS_MAX
-        self._scene_id = self._scene_order[0]
         self._load_state()
 
     # ----- lifecycle -------------------------------------------------------------------
@@ -132,20 +110,21 @@ class LightController:
 
     def get_state(self) -> dict:
         with self._lock:
-            scene = self._scenes[self._scene_id]
             return {
                 "power": self._power,
                 "brightness": self._brightness,
-                "scene": scene.id,
-                "sceneName": scene.name,
+                "preset": self._active_preset(),
+                "presets": [{"id": p.id, "name": p.name, "brightness": p.brightness}
+                            for p in (self._presets[i] for i in self._preset_order)],
                 "connected": self._connected,
                 "deviceCount": len(self._devices),
-                "scenes": [{
-                    "id": s.id,
-                    "name": s.name,
-                    "colors": [rgb_to_hex(c) for c in s.colors],
-                } for s in (self._scenes[i] for i in self._scene_order)],
             }
+
+    def _active_preset(self):
+        if not self._power:
+            return None
+        return next((p.id for p in self._presets.values() if p.brightness == self._brightness),
+                    None)
 
     def add_listener(self, listener):
         """listener(state) is called after every change made through set_*; keep it quick."""
@@ -168,14 +147,20 @@ class LightController:
             self._commit()
             return self.get_state()
 
-    def set_scene(self, scene_id: str) -> dict:
-        if scene_id not in self._scenes:
-            raise KeyError(scene_id)
+    def set_preset(self, preset_id: str) -> dict:
+        if preset_id not in self._presets:
+            raise KeyError(preset_id)
+        return self.set_brightness(value=self._presets[preset_id].brightness)
+
+    def capture(self) -> list[str]:
+        """Remember the look you have set up in OpenRGB (see openrgb_output.py). Returns what
+        was captured, one line per output."""
         with self._lock:
-            self._scene_id = scene_id
-            self._power = True
-            self._commit()
-            return self.get_state()
+            results = []
+            for output in self._outputs:
+                if hasattr(output, "capture"):
+                    results.append(output.capture())
+            return results
 
     # ----- SDK plumbing ----------------------------------------------------------------
 
@@ -185,9 +170,7 @@ class LightController:
         noisy = evt.state in (CorsairSessionState.CSS_Connecting, CorsairSessionState.CSS_Timeout)
         log.log(logging.DEBUG if noisy else logging.INFO, "iCUE session: %s", evt.state)
         self._connected = evt.state == CorsairSessionState.CSS_Connected
-        if not self._connected:
-            self._controlled.clear()  # control is lost with the session
-        else:
+        if self._connected:
             self._empty_retries = 0
             self._resync.set()
 
@@ -195,8 +178,6 @@ class LightController:
         if evt.id == CorsairEventId.CEI_DeviceConnectionStatusChangedEvent:
             log.info("device %s %s", evt.data.device_id,
                      "connected" if evt.data.is_connected else "disconnected")
-            if not evt.data.is_connected:
-                self._controlled.discard(evt.data.device_id)
             self._resync.set()
 
     def _supervise(self):
@@ -218,7 +199,7 @@ class LightController:
                 log.exception("supervisor step failed; will retry on next event")
 
     def _setup(self):
-        """(Re)discover devices and take exclusive control of their lighting."""
+        """(Re)discover the iCUE devices. Control stays shared: our layer sits on top of iCUE's."""
         devices, err = self._sdk.get_devices(CorsairDeviceFilter(CorsairDeviceType.CDT_All))
         if err != 0:
             log.error("get_devices failed: %s", err)
@@ -239,20 +220,11 @@ class LightController:
             if err != 0 or not leds:
                 log.warning("no LED positions for %s: %s", d.model, err)
                 continue
-            found.append(_Device(d.device_id, d.model, [l.id for l in leds],
-                                 [(l.cx, l.cy) for l in leds]))
+            found.append(_Device(d.device_id, d.model, [l.id for l in leds]))
         self._devices = found
-        for dev in found:
-            if dev.id in self._controlled:  # re-requesting held control returns CE_NoControl
-                continue
-            err = self._sdk.request_control(dev.id, CorsairAccessLevel.CAL_ExclusiveLightingControl)
-            if err == 0:
-                self._controlled.add(dev.id)
-            else:
-                log.error("request_control failed for %s: %s", dev.model, err)
         summary = ", ".join(d.model for d in found)
         if summary != self._last_summary:  # the 0-LED re-checks would otherwise repeat this
-            log.info("controlling %d device(s): %s", len(found), summary)
+            log.info("dimming %d iCUE device(s): %s", len(found), summary)
             self._last_summary = summary
         if not self._subscribed:
             self._subscribed = self._sdk.subscribe_for_events(self._on_device_event) == 0
@@ -269,36 +241,25 @@ class LightController:
             except Exception:
                 log.exception("state listener failed")
 
+    def _scale(self) -> float:
+        return self._brightness / 100 if self._power else 0.0
+
     def _apply_outputs(self):
-        scene = self._scenes[self._scene_id]
-        scale = self._brightness / 100 if self._power else 0.0
+        scale = self._scale()
         for output in self._outputs:
             try:
-                output.apply(scene, scale)
+                output.apply(scale)
             except Exception:
                 log.exception("output failed")
 
     def _apply(self):
-        scene = self._scenes[self._scene_id]
-        scale = self._brightness / 100 if self._power else 0.0
+        """Dim the iCUE devices: a black layer whose opacity is the brightness we take away."""
+        alpha = round(255 * (1 - self._scale()))
         for dev in self._devices:
-            colors = [
-                CorsairLedColor(led_id, *(round(c * scale) for c in rgb), 255)
-                for led_id, rgb in zip(dev.led_ids, self._device_colors(scene, dev))
-            ]
+            colors = [CorsairLedColor(led_id, 0, 0, 0, alpha) for led_id in dev.led_ids]
             err = self._sdk.set_led_colors(dev.id, colors)
             if err != 0:
                 log.warning("set_led_colors on %s failed: %s", dev.model, err)
-
-    @staticmethod
-    def _device_colors(scene: Scene, dev: _Device):
-        if len(scene.colors) == 1:
-            return [scene.colors[0]] * len(dev.led_ids)
-        dx, dy = math.cos(math.radians(scene.angle)), math.sin(math.radians(scene.angle))
-        proj = [x * dx + y * dy for x, y in dev.positions]
-        lo, hi = min(proj), max(proj)
-        span = hi - lo
-        return [scene.color_at((p - lo) / span if span else 0.5) for p in proj]
 
     # ----- persistence -----------------------------------------------------------------
 
@@ -310,11 +271,9 @@ class LightController:
         self._power = bool(data.get("power", self._power))
         self._brightness = min(max(int(data.get("brightness", self._brightness)),
                                    BRIGHTNESS_MIN), BRIGHTNESS_MAX)
-        if data.get("scene") in self._scenes:
-            self._scene_id = data["scene"]
 
     def _save_state(self):
-        data = {"power": self._power, "brightness": self._brightness, "scene": self._scene_id}
+        data = {"power": self._power, "brightness": self._brightness}
         try:
             self._state_path.write_text(json.dumps(data), encoding="utf-8")
         except OSError as e:

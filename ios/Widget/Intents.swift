@@ -59,23 +59,23 @@ struct StepBrightnessIntent: AppIntent {
     }
 }
 
-struct SelectSceneIntent: AppIntent {
-    static let title: LocalizedStringResource = "Select scene"
+struct SelectPresetIntent: AppIntent {
+    static let title: LocalizedStringResource = "Select brightness preset"
     static let isDiscoverable = false
 
     @Parameter(title: "Address") var host: String
     @Parameter(title: "Token") var token: String
-    @Parameter(title: "Scene") var sceneID: String
+    @Parameter(title: "Preset") var presetID: String
 
     init() {}
-    init(host: String, token: String, sceneID: String) {
+    init(host: String, token: String, presetID: String) {
         self.host = host
         self.token = token
-        self.sceneID = sceneID
+        self.presetID = presetID
     }
 
     func perform() async throws -> some IntentResult {
-        try await BridgeClient(host: host, token: token).selectScene(sceneID)
+        try await BridgeClient(host: host, token: token).selectPreset(presetID)
         return .result()
     }
 }

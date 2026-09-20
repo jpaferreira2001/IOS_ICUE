@@ -3,5 +3,6 @@
 config.json
 homekit.state
 state.json
+base_colors.json
 bridge.log*
 __pycache__/

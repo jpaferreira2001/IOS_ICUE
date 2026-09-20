@@ -49,8 +49,8 @@ struct ContentView: View {
         defer { testing = false }
         do {
             let state = try await BridgeClient(host: host, token: token).state()
-            status = "Connected: \(state.deviceCount) device(s), scene \(state.sceneName), "
-                + (state.power ? "\(state.brightness)%" : "off") + "."
+            let level = state.power ? "\(state.brightness)%" : "off"
+            status = "Connected: \(state.deviceCount) iCUE device(s), lights \(level)."
         } catch {
             status = "Failed: \(error.localizedDescription)"
         }

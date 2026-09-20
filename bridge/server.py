@@ -13,16 +13,23 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request
 
-from controller import LightController, load_scenes
+from controller import LightController, load_presets
 
 HERE = Path(__file__).parent
 CONFIG_PATH = HERE / "config.json"
 DEFAULT_CONFIG = {
     "host": "0.0.0.0", "port": 8765, "refresh_seconds": 0,
     "homekit": False, "homekit_port": 51826,  # HomeKit is optional; see PROJECT.md
-    # Devices driven through OpenRGB (its Windows service serves the SDK on 6742). Names must
+    # Brightness presets for the phone widget (percent). Colors are never set by the bridge:
+    # you choose them in iCUE and OpenRGB.
+    "presets": [
+        {"id": "day", "name": "Day", "brightness": 50},
+        {"id": "night", "name": "Night", "brightness": 20},
+        {"id": "movie", "name": "Movie", "brightness": 5},
+    ],
+    # Devices dimmed through OpenRGB (its Windows service serves the SDK on 6742). Names must
     # match OpenRGB's device names exactly (case-insensitive); absent ones are skipped.
-    # iCUE keeps the Corsair RAM and LINK hub, which OpenRGB cannot see / should not touch.
+    # iCUE dims the Corsair RAM and LINK hub, which OpenRGB cannot see / should not touch.
     "openrgb": {
         "enabled": True, "address": "127.0.0.1", "port": 6742,
         "devices": ["Gigabyte GeForce RTX 5070 Eagle OC ICE", "Razer Huntsman V2",
@@ -101,12 +108,18 @@ def create_app(controller: LightController, token: str) -> Flask:
         except (ValueError, TypeError) as e:
             return jsonify(error=str(e)), 400
 
-    @app.post("/scene/<scene_id>")
-    def scene(scene_id):
+    @app.post("/preset/<preset_id>")
+    def preset(preset_id):
+        # Sets the preset's brightness (and turns the lights on).
         try:
-            return jsonify(controller.set_scene(scene_id))
+            return jsonify(controller.set_preset(preset_id))
         except KeyError:
-            return jsonify(error=f"unknown scene '{scene_id}'"), 404
+            return jsonify(error=f"unknown preset '{preset_id}'"), 404
+
+    @app.post("/capture")
+    def capture():
+        # Remember the colors currently set in OpenRGB as the look to dim (see PROJECT.md).
+        return jsonify(captured=controller.capture())
 
     @app.get("/")
     def test_page():
@@ -122,32 +135,37 @@ TEST_PAGE = """<!doctype html><meta name=viewport content="width=device-width,in
 body{background:#000;color:#ddd;font:16px system-ui;margin:0;padding:16px;max-width:420px}
 button{background:#1c1c1e;color:#eee;border:0;border-radius:12px;padding:16px;font-size:16px;margin:4px}
 button.on{outline:2px solid #ff9a3c}
-#scenes button{display:block;width:100%;margin:6px 0;text-align:left}
+#presets button{display:block;width:100%;margin:6px 0;text-align:left}
+small{color:#888;display:block;margin-top:14px}
 </style>
 <h3 id=s>...</h3>
-<button onclick="call('/power')">Power</button>
-<button onclick="call('/brightness',{delta:-10})">&minus;</button>
-<button onclick="call('/brightness',{delta:10})">+</button>
-<div id=scenes></div>
+<button onclick="act('/power')">Power</button>
+<button onclick="act('/brightness',{delta:-10})">&minus;</button>
+<button onclick="act('/brightness',{delta:10})">+</button>
+<div id=presets></div>
+<small id=note></small>
+<button onclick="capture()" style="margin-top:8px">Capture my OpenRGB colors</button>
 <script>
 const token=new URLSearchParams(location.search).get('token')||'';
 async function call(path,body){
   const r=await fetch(path,{method:path=='/state'?'GET':'POST',
     headers:{'X-Token':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
-  render(await r.json());
+  return r.json();
 }
+async function act(path,body){render(await call(path,body))}
+async function capture(){const r=await call('/capture');note.textContent=(r.captured||[r.error]).join(' | ')}
 function render(st){
   if(st.error){s.textContent=st.error;return}
-  s.textContent=(st.power?'On':'Off')+' \\u00b7 '+st.brightness+'% \\u00b7 '+st.sceneName+(st.connected?'':' (iCUE not connected)');
-  scenes.innerHTML='';
-  for(const sc of st.scenes){
+  s.textContent=(st.power?'On':'Off')+' \\u00b7 '+st.brightness+'%'+(st.connected?'':' (iCUE not connected)');
+  presets.innerHTML='';
+  for(const p of st.presets){
     const b=document.createElement('button');
-    b.textContent=sc.name;b.style.background='linear-gradient(90deg,'+sc.colors.join(',')+(sc.colors.length<2?','+sc.colors[0]:'')+')';
-    b.style.color='#000';if(sc.id==st.scene&&st.power)b.className='on';
-    b.onclick=()=>call('/scene/'+sc.id);scenes.appendChild(b);
+    b.textContent=p.name+' \\u00b7 '+p.brightness+'%';
+    if(p.id==st.preset)b.className='on';
+    b.onclick=()=>act('/preset/'+p.id);presets.appendChild(b);
   }
 }
-call('/state');
+act('/state');
 </script>"""
 
 
@@ -187,8 +205,8 @@ def main():
     if cfg["openrgb"].get("enabled"):
         from openrgb_output import OpenRgbOutput  # imported here so it stays optional
         outputs.append(OpenRgbOutput(cfg["openrgb"]["address"], cfg["openrgb"]["port"],
-                                     cfg["openrgb"]["devices"]))
-    controller = LightController(load_scenes(HERE / "scenes.json"), HERE / "state.json",
+                                     cfg["openrgb"]["devices"], HERE / "base_colors.json"))
+    controller = LightController(load_presets(cfg["presets"]), HERE / "state.json",
                                  cfg["refresh_seconds"], outputs)
     controller.start()
     atexit.register(controller.stop)

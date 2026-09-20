@@ -1,4 +1,4 @@
-"""HomeKit front end: one light plus one switch per scene, all driven by the LightController."""
+"""HomeKit front end: one light plus one switch per brightness preset (LightController)."""
 import logging
 from pathlib import Path
 
@@ -11,9 +11,10 @@ from controller import BRIGHTNESS_MIN, LightController
 log = logging.getLogger("bridge.homekit")
 
 LIGHT_AID = 2
-# Scene i gets aid SCENE_AID_BASE + i, so scenes added at the END of scenes.json keep the
-# existing pairing intact. (Reordering or removing scenes shifts them; re-pair if you do.)
-SCENE_AID_BASE = 100
+# Preset i gets aid PRESET_AID_BASE + i, so presets added at the END of the "presets" list in
+# config.json keep an existing pairing intact. (Reordering or removing presets shifts them;
+# re-pair if you do.)
+PRESET_AID_BASE = 100
 
 
 class LightAccessory(Accessory):
@@ -41,29 +42,28 @@ class LightAccessory(Accessory):
         self._brightness.set_value(state["brightness"])
 
 
-class SceneAccessory(Accessory):
-    """A switch that is on while its scene is the active one."""
+class PresetAccessory(Accessory):
+    """A switch that is on while its brightness preset is the active one."""
     category = CATEGORY_SWITCH
 
-    def __init__(self, driver, controller: LightController, scene: dict, aid: int):
-        super().__init__(driver, scene["name"], aid=aid)
-        self.set_info_service(manufacturer="iCUE bridge", model="Scene",
-                              serial_number=f"icue-scene-{scene['id']}")
+    def __init__(self, driver, controller: LightController, preset: dict, aid: int):
+        super().__init__(driver, preset["name"], aid=aid)
+        self.set_info_service(manufacturer="iCUE bridge", model="Preset",
+                              serial_number=f"icue-preset-{preset['id']}")
         self._controller = controller
-        self._scene_id = scene["id"]
+        self._preset_id = preset["id"]
         self._on = self.add_preload_service("Switch").configure_char(
             "On", setter_callback=self._set_on)
 
     def _set_on(self, value):
         if value:
-            self._controller.set_scene(self._scene_id)
+            self._controller.set_preset(self._preset_id)
             return
-        state = self._controller.get_state()
-        if state["power"] and state["scene"] == self._scene_id:
-            self._controller.set_power(False)  # turning the active scene off = lights off
+        if self._controller.get_state()["preset"] == self._preset_id:
+            self._controller.set_power(False)  # turning the active preset off = lights off
 
     def update(self, state: dict):
-        self._on.set_value(state["power"] and state["scene"] == self._scene_id)
+        self._on.set_value(state["preset"] == self._preset_id)
 
 
 def run_homekit(controller: LightController, *, pin: str, port: int, address: str,
@@ -74,8 +74,8 @@ def run_homekit(controller: LightController, *, pin: str, port: int, address: st
     bridge = Bridge(driver, "iCUE Bridge")
 
     accessories = [LightAccessory(driver, controller)]
-    for i, scene in enumerate(controller.get_state()["scenes"]):
-        accessories.append(SceneAccessory(driver, controller, scene, SCENE_AID_BASE + i))
+    for i, preset in enumerate(controller.get_state()["presets"]):
+        accessories.append(PresetAccessory(driver, controller, preset, PRESET_AID_BASE + i))
     for acc in accessories:
         bridge.add_accessory(acc)
     driver.add_accessory(accessory=bridge)

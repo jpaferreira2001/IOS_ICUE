@@ -6,24 +6,26 @@ Control Corsair iCUE lighting from an iOS StandBy widget.
 
 | Area | Decision |
 |---|---|
-| iOS route | Custom WidgetKit widget, built in GitHub Actions, sideloaded with Sideloadly. Status: the app installs and connects, but the widget did not appear in the gallery on the first build (see "Widget not showing" below). HomeKit (`bridge/homekit.py`, off by default) is an unused fallback. |
+| iOS route | Custom WidgetKit widget, built in GitHub Actions and sideloaded with a free Apple ID. Sideloadly installed the app but never registered the widget extension (see "Widget not showing" below); the widget works with the current build. Any change to `ios/` needs a new CI build and a re-install. HomeKit (`bridge/homekit.py`, off by default) is an unused fallback. |
 | Target OS | iOS 26+, StandBy, interactive widget (App Intents) |
 | Connectivity | Home Wi-Fi only for now. Tailscale can be added later without changes. |
-| Devices | All connected iCUE devices |
-| Scenes | Solid colors and gradients, defined in `bridge/scenes.json` |
+| Devices | Corsair RAM + LINK hub through the iCUE SDK; GPU, Razer keyboard and mouse through OpenRGB |
+| What the app controls | **Brightness only** (power, - / +, and Day 50% / Night 20% / Movie 5% presets). The bridge never picks colors: you set colors and effects in iCUE and OpenRGB. Presets live in `config.json` > `presets`. |
 | Auth | Shared secret token in `bridge/config.json` (git-ignored) |
 | App Groups | Not used (free Apple IDs are restricted on entitlements). The widget reads all state from the bridge, and the bridge address and token are parameters on the widget itself (touch and hold > Edit Widget), so no secrets are baked into the build. |
 
 ## Widget design
 
-One `systemSmall` widget (~160x160 pt in StandBy), dark and minimal, black background, soft glow in the active scene's color, readable under StandBy Night Mode's red tint.
+One `systemSmall` widget (~160x160 pt in StandBy), dark and minimal, black background with a warm glow that follows the real brightness, readable under StandBy Night Mode's red tint.
 
 ```
- [ Power ] [  -  ] [  +  ]      brightness shown as "60%"
- [ Scene1] [Scene2] [Scene3]    first three scenes from GET /state
+ 50%                     Day    current brightness, active preset name
+ [ Power ] [  -  ] [  +  ]
+ [  Day  ] [Night] [Movie]      first three presets from GET /state, each with its %
+ [  50%  ] [ 20% ] [  5%  ]
 ```
 
-WidgetKit has no sliders, so brightness moves in steps of 10. A real slider can go in the companion app later.
+WidgetKit has no sliders, so brightness moves in steps of 10. A preset tile lights up while the brightness equals its preset.
 
 ## Bridge API (`bridge/`)
 
@@ -32,19 +34,24 @@ All endpoints except `/health` need the token: header `X-Token: <token>` (or `Au
 | Method | Path | Body | Effect |
 |---|---|---|---|
 | GET | `/health` | | liveness, no auth |
-| GET | `/state` | | `power, brightness, scene, sceneName, connected, deviceCount, scenes[{id,name,colors}]` |
+| GET | `/state` | | `power, brightness, preset (id or null), presets[{id,name,brightness}], connected (iCUE), deviceCount` |
 | POST | `/power` | `{"on": true}` or empty to toggle | |
 | POST | `/brightness` | `{"value": 60}` or `{"delta": -10}` | clamped to 5-100; turns power on |
-| POST | `/scene/<id>` | | turns power on |
-| GET | `/` | | minimal browser test page (`/?token=...`) |
+| POST | `/preset/<id>` | | sets that preset's brightness; turns power on |
+| POST | `/capture` | | remember the colors currently set in OpenRGB as the look to dim (see below) |
+| GET | `/` | | minimal browser test page (`/?token=...`) with the presets and a Capture button |
 
 Every write returns the new state, so the widget can refresh from the response.
 
 ## Architecture now: iCUE SDK + OpenRGB (hybrid)
 
-- **iCUE SDK** (`controller.py`) drives what only iCUE can: the Corsair Vengeance RAM and the iCUE LINK hub (fans). iCUE also keeps the cooler's LCD display. iCUE must be running.
-- **OpenRGB** (`openrgb_output.py`) drives the Gigabyte RTX 5070 GPU and the Razer keyboard and mouse. The OpenRGB Windows service (auto-start, SDK server on 127.0.0.1:6742) must be running. List the devices in `config.json` > `openrgb.devices` (exact OpenRGB names).
-- Every power/brightness/scene change goes to both. Gradient scenes are spread left to right across a device's key matrix or LED order; solid scenes are uniform. Brightness scales the colors.
+The bridge only dims. Colors, presets and effects are yours to set in iCUE and OpenRGB.
+
+- **iCUE devices (Corsair Vengeance RAM, iCUE LINK hub/fans)** (`controller.py`): the SDK keeps *shared* control, so the bridge's layer sits on top of iCUE's own (iCUE = priority 127, SDK clients 128). Brightness is a transparent **black overlay**: alpha 0 = untouched, 255 = black (`CorsairLedColor.a`, per the SDK reference p.28). Whatever iCUE shows, including animated effects, just gets dimmer; the cooler's LCD is not touched. iCUE must be running. *Not yet tested on hardware.*
+- **OpenRGB devices (Gigabyte GPU, Razer keyboard and mouse)** (`openrgb_output.py`): the OpenRGB Windows service (auto-start, SDK on 127.0.0.1:6742) must be running. List devices in `config.json` > `openrgb.devices` (exact OpenRGB names). These devices in Direct mode just hold the per-LED colors last sent, so the bridge keeps a **base look** and sends base x brightness.
+  - Set your colors in OpenRGB, then capture them once: `POST /capture` or the *Capture my OpenRGB colors* button on the test page. The look is saved in `bridge/base_colors.json` (git-ignored). Capture again whenever you change the colors.
+  - Capture refuses to adopt colors the bridge itself just wrote ("unchanged since the bridge last wrote it"), so it can't capture a dimmed look by mistake. If a device has no saved look, the bridge takes its current colors on first use.
+  - Only static colors and gradients survive: an animated OpenRGB effect would be frozen at the captured frame.
 - Keep the Razer Synapse app closed (OpenRGB drives the Razer devices), and leave the OpenRGB devices in Direct mode (a per-LED Static for the GPU): colors are ignored in animated modes.
 
 **OpenRGB 1.0 gotcha (cost hours):** its server silently ignores color writes from protocol <= 5 clients, which includes openrgb-python (max protocol 4), while reads still work. From protocol 6 on, controllers are addressed by unique IDs that only a protocol-6 client receives, and they change every time OpenRGB re-detects hardware (the OpenRGB window's log showed IDs 50-54, later 55-59). `openrgb_output.py` therefore reads device details with openrgb-python at protocol 3 (protocol 4+ costs a 10 s plugin-list timeout per connection) and writes `UPDATELEDS` (packet 1050) over a small protocol-6 socket, re-reading the ID list before every write. Verified by reading colors back from the server and by eye.
@@ -143,6 +150,9 @@ Also give the PC a fixed IP (DHCP reservation on your router), because the widge
 
 - [x] Bridge: device listing, controller, HTTP API, scenes, browser test page
 - [x] Verified from phone browser over Wi-Fi
+- [x] Brightness-only model: presets (Day 50 / Night 20 / Movie 5), `/preset`, `/capture`; OpenRGB dimming verified by reading colors back
+- [ ] Test iCUE dimming (black overlay, shared control) with iCUE running: RAM and fans dim, effects and the cooler LCD untouched
+- [ ] Rebuild the iOS app (widget now has Power, -, +, Day / Night / Movie), re-install, test in StandBy
 - [x] HomeKit accessory in the bridge (advertisement verified on the PC's network)
 - [ ] Pair with the Home app, test the light and scene switches, add Home widget in StandBy
 - [x] Bridge auto-start at Windows login (`bridge/install_autostart.ps1`)

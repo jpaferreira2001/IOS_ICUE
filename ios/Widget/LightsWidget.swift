@@ -46,17 +46,21 @@ struct LightsProvider: AppIntentTimelineProvider {
 
 extension BridgeState {
     static let sample = BridgeState(
-        power: true, brightness: 60, scene: "ocean", sceneName: "Ocean", connected: true,
-        deviceCount: 2,
-        scenes: [
-            BridgeScene(id: "warm", name: "Warm", colors: ["#FF9A3C"]),
-            BridgeScene(id: "ocean", name: "Ocean", colors: ["#0A3CFF", "#00D4FF"]),
-            BridgeScene(id: "sunset", name: "Sunset", colors: ["#FF512F", "#DD2476"]),
-        ])
+        power: true, brightness: 50, preset: "day",
+        presets: [
+            BridgePreset(id: "day", name: "Day", brightness: 50),
+            BridgePreset(id: "night", name: "Night", brightness: 20),
+            BridgePreset(id: "movie", name: "Movie", brightness: 5),
+        ],
+        connected: true, deviceCount: 2)
 }
 
 struct LightsWidgetView: View {
     let entry: LightsEntry
+
+    /// Warm accent for the active button and the glow. The bridge never sends colors: the
+    /// lights keep whatever colors you set in iCUE and OpenRGB, and this only changes brightness.
+    private static let accent = Color(red: 1.0, green: 0.6, blue: 0.25)
 
     var body: some View {
         Group {
@@ -72,17 +76,16 @@ struct LightsWidgetView: View {
         .containerBackground(for: .widget) {
             ZStack {
                 Color.black
-                RadialGradient(colors: [glow.opacity(0.30), .clear], center: .top,
+                RadialGradient(colors: [Self.accent.opacity(glowStrength), .clear], center: .top,
                                startRadius: 0, endRadius: 150)
             }
         }
     }
 
-    private var glow: Color {
-        guard let state = entry.state, state.power,
-              let hex = state.scenes.first(where: { $0.id == state.scene })?.colors.first
-        else { return .clear }
-        return Color(hex: hex)
+    /// The background glow follows the real brightness, so the widget itself dims with the lights.
+    private var glowStrength: Double {
+        guard let state = entry.state, state.power else { return 0 }
+        return 0.35 * Double(state.brightness) / 100
     }
 
     private func controls(_ state: BridgeState) -> some View {
@@ -90,14 +93,16 @@ struct LightsWidgetView: View {
             HStack {
                 Text(state.power ? "\(state.brightness)%" : "Off")
                 Spacer()
-                Text(state.sceneName).lineLimit(1)
+                if state.power, let active = state.presets.first(where: { $0.id == state.preset }) {
+                    Text(active.name).lineLimit(1)
+                }
             }
             .font(.system(size: 11, weight: .medium, design: .rounded))
             .foregroundStyle(.white.opacity(0.6))
 
             HStack(spacing: 6) {
                 Button(intent: SetPowerIntent(host: entry.host, token: entry.token, on: !state.power)) {
-                    tile(fill: AnyShapeStyle(state.power ? glow.opacity(0.9) : Color.white.opacity(0.12))) {
+                    tile(fill: AnyShapeStyle(state.power ? Self.accent.opacity(0.9) : Color.white.opacity(0.12))) {
                         Image(systemName: "power")
                             .foregroundStyle(state.power ? Color.black : Color.white)
                     }
@@ -111,35 +116,30 @@ struct LightsWidgetView: View {
             }
 
             HStack(spacing: 6) {
-                ForEach(state.scenes.prefix(3)) { scene in
-                    sceneButton(scene, state: state)
+                ForEach(state.presets.prefix(3)) { preset in
+                    presetButton(preset, state: state)
                 }
             }
         }
         .buttonStyle(.plain)
     }
 
-    private func sceneButton(_ scene: BridgeScene, state: BridgeState) -> some View {
-        let colors = scene.colors.map { Color(hex: $0) }
-        let gradient = LinearGradient(colors: colors + (colors.count == 1 ? colors : []),
-                                      startPoint: .leading, endPoint: .trailing)
-        let luminance = scene.colors.map { RGB(hex: $0).luminance }.reduce(0, +)
-            / Double(max(scene.colors.count, 1))
-        let active = state.power && scene.id == state.scene
-        return Button(intent: SelectSceneIntent(host: entry.host, token: entry.token, sceneID: scene.id)) {
-            tile(fill: AnyShapeStyle(gradient)) {
-                Text(scene.name)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                    .padding(.horizontal, 2)
-                    .foregroundStyle(luminance > 0.55 ? Color.black : Color.white)
+    private func presetButton(_ preset: BridgePreset, state: BridgeState) -> some View {
+        let active = state.power && preset.id == state.preset
+        return Button(intent: SelectPresetIntent(host: entry.host, token: entry.token, presetID: preset.id)) {
+            tile(fill: AnyShapeStyle(active ? Self.accent.opacity(0.9) : Color.white.opacity(0.12))) {
+                VStack(spacing: 1) {
+                    Text(preset.name)
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text("\(preset.brightness)%")
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .opacity(0.75)
+                }
+                .padding(.horizontal, 2)
+                .foregroundStyle(active ? Color.black : Color.white)
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.white, lineWidth: active ? 2 : 0)
-            )
-            .opacity(state.power ? 1 : 0.4)
         }
     }
 
@@ -163,7 +163,7 @@ struct LightsWidget: Widget {
             LightsWidgetView(entry: entry)
         }
         .configurationDisplayName("iCUE Lights")
-        .description("Power, brightness and scenes for your iCUE lighting.")
+        .description("Power, brightness and Day / Night / Movie presets for your lighting.")
         .supportedFamilies([.systemSmall])
     }
 }
@@ -172,6 +172,5 @@ struct LightsWidget: Widget {
 struct LightsWidgetBundle: WidgetBundle {
     var body: some Widget {
         LightsWidget()
-        ProbeWidget()
     }
 }

@@ -1,20 +1,18 @@
 import Foundation
-import SwiftUI
 
-struct BridgeScene: Decodable, Hashable, Identifiable {
+struct BridgePreset: Decodable, Hashable, Identifiable {
     let id: String
     let name: String
-    let colors: [String]
+    let brightness: Int
 }
 
 struct BridgeState: Decodable {
     let power: Bool
     let brightness: Int
-    let scene: String
-    let sceneName: String
+    let preset: String?  // id of the preset matching the current brightness, if any
+    let presets: [BridgePreset]
     let connected: Bool
     let deviceCount: Int
-    let scenes: [BridgeScene]
 }
 
 enum BridgeError: LocalizedError {
@@ -57,8 +55,8 @@ struct BridgeClient {
     }
 
     @discardableResult
-    func selectScene(_ id: String) async throws -> BridgeState {
-        try await send("scene/\(id)")  
+    func selectPreset(_ id: String) async throws -> BridgeState {
+        try await send("preset/\(id)")
     }
 
     private func send(_ path: String, method: String = "POST",
@@ -78,27 +76,5 @@ struct BridgeClient {
         case 401: throw BridgeError.unauthorized
         default: throw BridgeError.http(code)
         }
-    }
-}
-
-struct RGB {
-    let r: Double, g: Double, b: Double  // 0...1
-
-    init(hex: String) {
-        var value: UInt64 = 0
-        Scanner(string: hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")))
-            .scanHexInt64(&value)
-        r = Double((value >> 16) & 0xFF) / 255
-        g = Double((value >> 8) & 0xFF) / 255
-        b = Double(value & 0xFF) / 255
-    }
-
-    var luminance: Double { 0.299 * r + 0.587 * g + 0.114 * b }
-}
-
-extension Color {
-    init(hex: String) {
-        let c = RGB(hex: hex)
-        self.init(red: c.r, green: c.g, blue: c.b)
     }
 }
