@@ -181,7 +181,9 @@ class LightController:
 
     def _on_session_state(self, evt):
         # Runs on an SDK thread: only flag work, never call the SDK from here.
-        log.info("iCUE session: %s", evt.state)
+        # While iCUE is closed the SDK flips Connecting/Timeout every second; that is noise.
+        noisy = evt.state in (CorsairSessionState.CSS_Connecting, CorsairSessionState.CSS_Timeout)
+        log.log(logging.DEBUG if noisy else logging.INFO, "iCUE session: %s", evt.state)
         self._connected = evt.state == CorsairSessionState.CSS_Connected
         if not self._connected:
             self._controlled.clear()  # control is lost with the session
