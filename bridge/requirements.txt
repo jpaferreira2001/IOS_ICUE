@@ -1,2 +1,3 @@
 cuesdk
 flask
+HAP-python

@@ -1,10 +1,11 @@
-"""HTTP API in front of the iCUE controller. Run: python server.py"""
+"""HTTP API and HomeKit accessory in front of the iCUE controller. Run: python server.py"""
 import atexit
 import hmac
 import json
 import logging
 import secrets
 import socket
+import threading
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -13,17 +14,29 @@ from controller import LightController, load_scenes
 
 HERE = Path(__file__).parent
 CONFIG_PATH = HERE / "config.json"
-DEFAULT_CONFIG = {"host": "0.0.0.0", "port": 8765, "refresh_seconds": 0}
+DEFAULT_CONFIG = {"host": "0.0.0.0", "port": 8765, "refresh_seconds": 0,
+                  "homekit": False, "homekit_port": 51826}  # HomeKit is optional; see PROJECT.md
+
+
+def new_homekit_pin() -> str:
+    """Random 'xxx-xx-xxx' setup code, avoiding the codes HomeKit rejects as too easy."""
+    while True:
+        digits = "%08d" % secrets.randbelow(10**8)
+        if len(set(digits)) > 1 and digits not in ("12345678", "87654321"):
+            return f"{digits[:3]}-{digits[3:5]}-{digits[5:]}"
 
 
 def load_config() -> dict:
-    """Read config.json, creating it (with a fresh random token) on first run."""
-    if not CONFIG_PATH.exists():
-        cfg = {**DEFAULT_CONFIG, "token": secrets.token_urlsafe(24)}
+    """Read config.json, creating it (fresh random token and PIN) or filling in new keys."""
+    # utf-8-sig: Windows editors (and PowerShell 5.1) like to prepend a BOM
+    stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")) if CONFIG_PATH.exists() else {}
+    cfg = {**DEFAULT_CONFIG, **stored}
+    cfg.setdefault("token", secrets.token_urlsafe(24))
+    cfg.setdefault("homekit_pin", new_homekit_pin())
+    if cfg != stored:
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        logging.info("created %s", CONFIG_PATH)
-        return cfg
-    return {**DEFAULT_CONFIG, **json.loads(CONFIG_PATH.read_text(encoding="utf-8"))}
+        logging.info("updated %s", CONFIG_PATH)
+    return cfg
 
 
 def lan_ip() -> str:
@@ -133,8 +146,23 @@ def main():
     controller.start()
     atexit.register(controller.stop)
 
-    print(f"\n  Test page:  http://{lan_ip()}:{cfg['port']}/?token={cfg['token']}\n")
-    create_app(controller, cfg["token"]).run(host=cfg["host"], port=cfg["port"], threaded=True)
+    ip = lan_ip()
+    print(f"\n  Test page:  http://{ip}:{cfg['port']}/?token={cfg['token']}")
+    app = create_app(controller, cfg["token"])
+
+    def serve_http():
+        app.run(host=cfg["host"], port=cfg["port"], threaded=True)
+
+    if not cfg["homekit"]:
+        print()
+        serve_http()
+        return
+
+    print(f"  HomeKit:    Home app > Add Accessory > More options > iCUE Bridge, code {cfg['homekit_pin']}\n")
+    threading.Thread(target=serve_http, name="http", daemon=True).start()
+    from homekit import run_homekit  # imported here so HTTP-only setups don't need HAP-python
+    run_homekit(controller, pin=cfg["homekit_pin"], port=cfg["homekit_port"], address=ip,
+                persist_file=HERE / "homekit.state")
 
 
 if __name__ == "__main__":

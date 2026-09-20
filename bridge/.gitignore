@@ -1,4 +1,6 @@
-# config.json holds the API token: never commit it
+# config.json holds the API token and HomeKit PIN; homekit.state holds the pairing keys.
+# Never commit either.
 config.json
+homekit.state
 state.json
 __pycache__/

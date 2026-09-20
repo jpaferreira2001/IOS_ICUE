@@ -16,6 +16,10 @@ log = logging.getLogger("bridge.controller")
 
 BRIGHTNESS_MIN = 5  # below this it looks "off" while power still says on; use power for off
 BRIGHTNESS_MAX = 100
+# Re-checks for devices that report 0 LEDs: the first few are quick, then it polls slowly.
+EMPTY_RETRY_FAST = 3.0
+EMPTY_RETRY_FAST_COUNT = 10
+EMPTY_RETRY_SLOW = 30.0
 
 
 def hex_to_rgb(value: str):
@@ -84,6 +88,8 @@ class LightController:
         self._connected = False
         self._subscribed = False
         self._controlled: set[str] = set()  # device ids we hold exclusive lighting control of
+        self._listeners: list = []
+        self._empty_retries = 0
         self._devices: list[_Device] = []
         self._sdk: CueSdk | None = None
         self._thread: threading.Thread | None = None
@@ -132,6 +138,10 @@ class LightController:
                 } for s in (self._scenes[i] for i in self._scene_order)],
             }
 
+    def add_listener(self, listener):
+        """listener(state) is called after every change made through set_*; keep it quick."""
+        self._listeners.append(listener)
+
     def set_power(self, on: bool | None = None) -> dict:
         """on=None toggles."""
         with self._lock:
@@ -167,6 +177,7 @@ class LightController:
         if not self._connected:
             self._controlled.clear()  # control is lost with the session
         else:
+            self._empty_retries = 0
             self._resync.set()
 
     def _on_device_event(self, evt):
@@ -201,6 +212,14 @@ class LightController:
             log.error("get_devices failed: %s", err)
             return
         found = []
+        if any(d.led_count == 0 for d in devices):
+            # A device can report 0 LEDs while iCUE is still initialising it (some, like the
+            # Nautilus LCD cap, really have none). Look again soon, then settle to a slow poll.
+            delay = EMPTY_RETRY_FAST if self._empty_retries < EMPTY_RETRY_FAST_COUNT else EMPTY_RETRY_SLOW
+            self._empty_retries += 1
+            timer = threading.Timer(delay, self._resync.set)
+            timer.daemon = True
+            timer.start()
         for d in devices:
             if d.led_count == 0:
                 continue
@@ -227,6 +246,12 @@ class LightController:
         self._save_state()
         if self._connected:
             self._apply()
+        state = self.get_state()
+        for listener in self._listeners:
+            try:
+                listener(state)
+            except Exception:
+                log.exception("state listener failed")
 
     def _apply(self):
         scene = self._scenes[self._scene_id]
