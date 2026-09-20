@@ -53,6 +53,10 @@ Build 2 changes: extension display name is now "iCUE Lights Widget"; an app icon
 - Both show: fixed; delete `ProbeWidget.swift` and its line in `LightsWidgetBundle`.
 - Neither shows: the extension isn't being registered; next step is a different signing route.
 
+Result of build 2 (2026-09-20): App IDs Remaining went 9 -> 7, so the extension now gets its own App ID (the name clash was real), but neither the widget nor the plain test widget appears in the gallery, even with WidgetKit Developer Mode on. So iOS registers the app but ignores the extension.
+
+Theory for build 3: Sideloadly's "automatic bundle ID" rewrites bundle IDs on iOS 26 ("will mangle bundleID"); if it rewrites app and extension independently, the extension is no longer `<app ID>.<one component>` and iOS ignores it. Build 3 uses IDs unique to the developer (`com.jpaferreira.icuelights` / `.widget`) and Sideloadly's "Use automatic bundle ID" is UNTICKED so nothing is rewritten. If that fails too: AltStore (install desktop iTunes/iCloud via winget first) or the HomeKit fallback. Free accounts allow 10 new App IDs per 7 days, so each experiment costs up to 2.
+
 Ruled out: Sideloadly "Drop plug-ins" (0 of 1 dropped), missing extension in the IPA, plist mistakes, restart/reinstall. SideStore's iOS 18 widget fix (PR #746) was about its own widget's `containerBackground`, unrelated.
 
 ## HomeKit (`bridge/homekit.py`, optional, off by default)
