@@ -50,6 +50,8 @@ Findings (2026-09-20):
 - The documented settings struct (older SDK, from the GPL RGB-Fusion-Tool): `GVLED_CFG` = 11 x uint32 (`nType` 1=static, `nSpeed`, `dwTime1-3`, `nMinBrightness`, `nMaxBrightness` 0-10, `dwColor` 0x00RRGGBB, `nAngle`, `nOn`, `nSync`). Not verified against v3.7.
 - OpenRGB supports some Gigabyte 50-series cards per model (5080 Waterforce, 5090 Master at I2C 0x75); there is only an open request for a 5070 variant (`1458:4174`, not this card).
 
+OpenRGB (chosen next): subsystem `1458:4185` is the **Gigabyte RTX 5070 Eagle OC ICE 12G**. OpenRGB's `GigabyteRGBFusion2BlackwellGPUController` has it (added 2026-06-17, I2C 0x75) and OpenRGB 1.0 was released 2026-09-12, so the stable release should include it. Windows needs admin rights and the PawnIO driver. Plan if it detects: run OpenRGB as a background SDK server (port 6742) and drive the GPU from the bridge with a Python client, mirroring power/brightness/scene. Installer: https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_1.0/OpenRGB_1.0_Windows_64_81bbe18.msi
+
 Untried: run `gpu_probe.py` as Administrator; probe `GvIllumLib.dll` (would need guessed signatures); OpenRGB detection test (close GCC first; it can also see the Corsair RAM, so only touch the GPU entry). Because Control Center writes to the same chip, expect it to override our colors whenever it applies its own profile.
 
 ## Run at login
